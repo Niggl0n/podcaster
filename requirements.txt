@@ -1,0 +1,6 @@
+langchain
+savify
+pysqlite3-binary
+transformers"[speech, sentencepiece]"
+datasets
+librosa

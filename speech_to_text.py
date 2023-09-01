@@ -1,5 +1,7 @@
+import os
 import torch
 from transformers import Speech2TextProcessor, Speech2TextForConditionalGeneration
+from transformers import WhisperProcessor, WhisperForConditionalGeneration
 from datasets import load_dataset, Audio, Dataset
 import sounddevice as sd
 from pydub import AudioSegment
@@ -11,61 +13,84 @@ from datasets import Dataset
 def load_audio_file(file_path):
     return librosa.load(file_path, sr=None)
 
+def save_to_mp3(example_snippet, export_path):
+    example_snippet = np.array(example_snippet)
+    example_snippet = example_snippet.astype(np.float32)
+    audio_segment = AudioSegment(
+        example_snippet.tobytes(),
+        frame_rate=sr,  # Adjust according to your data
+        sample_width=4,
+        channels=1,
+    )
+    audio_segment.export(export_path, format="mp3")
+
 
 def segment_audio(file_path, segment_length_seconds, target_sr=16000):
-    # Load the audio file
     audio_data, original_sr = librosa.load(file_path, sr=None)
-    # Resample the audio to the target sample rate
     audio_data = librosa.resample(audio_data, orig_sr=original_sr, target_sr=target_sr)
-    # Calculate the segment length in samples
     segment_length_samples = segment_length_seconds * target_sr
-    # Determine the number of segments
     num_segments = int(len(audio_data) // segment_length_samples)
-    # Extract segments
-    segments = [audio_data[i * segment_length_samples : (i + 1) * segment_length_samples] for i in range(num_segments)]
+    segments = [audio_data[i * segment_length_samples: (i + 1) * segment_length_samples] for i in range(num_segments)]
+    # todo: include overlap of 1 second
     return segments, target_sr
 
 
-segment_length_seconds = 1 * 60
-# List to hold all segments
-all_segments = []
-# File paths
-file_paths = ["data/audio/glt1014526399.mp3"]
-# Iterate over file paths, load and segment audio, and append to all_segments
-for file_path in file_paths:
+def transcribe_s2t_small(audio_snippet, sr):
+    model = Speech2TextForConditionalGeneration.from_pretrained("facebook/s2t-small-librispeech-asr")
+    processor = Speech2TextProcessor.from_pretrained("facebook/s2t-small-librispeech-asr")
+    inputs = processor(audio_snippet, sampling_rate=sr, return_tensors="pt")
+    generated_ids = model.generate(inputs["input_features"], attention_mask=inputs["attention_mask"])
+    transcription = processor.batch_decode(generated_ids, skip_special_tokens=True)
+    return transcription
+
+
+def transcribe_whisper(audio_snippet, sr, model_str="whisper-tiny"):
+    model = WhisperForConditionalGeneration.from_pretrained("openai/"+model_str)
+    model.config.forced_decoder_ids = None
+    processor = WhisperProcessor.from_pretrained("openai/"+model_str)
+    inputs = processor(audio_snippet, sampling_rate=sr, return_tensors="pt")
+    generated_ids = model.generate(inputs["input_features"])
+    transcription = processor.batch_decode(generated_ids, skip_special_tokens=True)
+    return transcription
+
+def create_audio_dataset(file_path, segment_length_seconds=30):
+    # create audio dataset based on list of audio segments
+    all_segments = []
     segments, sr = segment_audio(file_path, segment_length_seconds)
     all_segments.extend(segments)
-# Create the dataset
-audio_dataset = Dataset.from_dict({"audio": all_segments})
-
-#sd.play(audio_dataset[0]["audio"], samplerate=16000)  # You might need to adjust the samplerate depending on your audio data
-#sd.wait()
-
-example_snippet = np.array(audio_dataset[0]["audio"])
-example_snippet = example_snippet.astype(np.float32)
-audio_segment = AudioSegment(
-    example_snippet.tobytes(),
-    frame_rate=sr,  # Adjust according to your data
-    sample_width=4,
-    channels=1,
-)
-# Export as MP3
-audio_segment.export("data/audio/example_ile.mp3", format="mp3")
+    audio_dataset = Dataset.from_dict({"audio": all_segments})
+    return audio_dataset
 
 
-model = Speech2TextForConditionalGeneration.from_pretrained("facebook/s2t-small-librispeech-asr")
-processor = Speech2TextProcessor.from_pretrained("facebook/s2t-small-librispeech-asr")
+def create_podcast_transcription(audio_dataset, sr=16000):
+    text_snippets = []
+    for i, snippet in enumerate(audio_dataset):
+        print(i)
+        audio_snippet = snippet["audio"]
+        # transcription_s2t = transcribe_s2t_small(audio_dataset[0]["audio"], sr)
+        transcription_whisper = transcribe_whisper(audio_snippet, sr, model_str="whisper-base")
+        text_snippets.append(transcription_whisper[0])
+    podcast_transcript = ' '.join(text_snippets)
+    return podcast_transcript
 
 
-inputs = processor(audio_dataset[0]["audio"], sampling_rate=sr, return_tensors="pt")
-generated_ids = model.generate(inputs["input_features"], attention_mask=inputs["attention_mask"])
+file_paths = ["data/audio/glt1014526399.mp3"]
+segment_length_seconds = 1 * 30
+for file_path in file_paths:
+    filename = os.path.basename(file_path).split('.')[0]
+    audio_dataset = create_audio_dataset(file_path, segment_length_seconds=30)
+    podcast_transcript = create_podcast_transcription(audio_dataset, sr=16000)
+    write_file_path = f"data/transcriptions/{filename}.txt"
+    with open(write_file_path, 'w') as file:
+        file.write(podcast_transcript)
 
-transcription = processor.batch_decode(generated_ids, skip_special_tokens=True)
+
+# play audio
+# for i in range(5):
+#     sd.play(audio_dataset[i]["audio"], samplerate=sr)  # You might need to adjust the samplerate depending on your audio data
+#     sd.wait()
 
 
 
-#dataset = load_dataset("audiofolder", data_files=["data/audio/glt1024839827.mp3"]).cast_column("audio", Audio())
-#audio_dataset = Dataset.from_dict({"audio": ["data/audio/glt1014526399.mp3"]}).cast_column("audio", Audio(decode=False))
-#ds = load_dataset("hf-internal-testing/librispeech_asr_demo", "clean", split="validation")
-#dataset_all = load_dataset("audiofolder", data_dir="data/audio")
 
+print("Finished")

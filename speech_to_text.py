@@ -1,7 +1,7 @@
 import os
 import torch
 from transformers import Speech2TextProcessor, Speech2TextForConditionalGeneration
-from transformers import WhisperProcessor, WhisperForConditionalGeneration
+from transformers import WhisperProcessor, WhisperForConditionalGeneration, pipeline
 from datasets import load_dataset, Audio, Dataset
 import sounddevice as sd
 from pydub import AudioSegment
@@ -13,7 +13,7 @@ from datasets import Dataset
 def load_audio_file(file_path):
     return librosa.load(file_path, sr=None)
 
-def save_to_mp3(example_snippet, export_path):
+def save_to_mp3(example_snippet, export_path, sr):
     example_snippet = np.array(example_snippet)
     example_snippet = example_snippet.astype(np.float32)
     audio_segment = AudioSegment(
@@ -44,7 +44,7 @@ def transcribe_s2t_small(audio_snippet, sr):
     return transcription
 
 
-def transcribe_whisper(audio_snippet, sr, model_str="whisper-tiny"):
+def transcribe_whisper(audio_snippet, sr, model_str="whisper-base"):
     model = WhisperForConditionalGeneration.from_pretrained("openai/"+model_str)
     model.config.forced_decoder_ids = None
     processor = WhisperProcessor.from_pretrained("openai/"+model_str)
@@ -62,7 +62,7 @@ def create_audio_dataset(file_path, segment_length_seconds=30):
     return audio_dataset
 
 
-def create_podcast_transcription(audio_dataset, sr=16000):
+def create_podcast_transcription(audio_dataset, sr=16000, break_after_n_snippets=np.inf):
     text_snippets = []
     for i, snippet in enumerate(audio_dataset):
         print(i)
@@ -70,17 +70,22 @@ def create_podcast_transcription(audio_dataset, sr=16000):
         # transcription_s2t = transcribe_s2t_small(audio_dataset[0]["audio"], sr)
         transcription_whisper = transcribe_whisper(audio_snippet, sr, model_str="whisper-base")
         text_snippets.append(transcription_whisper[0])
+        if i >= break_after_n_snippets:
+            break
     podcast_transcript = ' '.join(text_snippets)
     return podcast_transcript
 
 
 file_paths = ["data/audio/glt1014526399.mp3"]
 segment_length_seconds = 1 * 30
+sr = 16000
 for file_path in file_paths:
+    print(file_path)
     filename = os.path.basename(file_path).split('.')[0]
-    audio_dataset = create_audio_dataset(file_path, segment_length_seconds=30)
-    podcast_transcript = create_podcast_transcription(audio_dataset, sr=16000)
+    audio_dataset = create_audio_dataset(file_path, segment_length_seconds=segment_length_seconds)
+    podcast_transcript = create_podcast_transcription(audio_dataset, sr=sr, break_after_n_snippets=2)
     write_file_path = f"data/transcriptions/{filename}.txt"
+    print(f"Save Transcript to: {write_file_path}")
     with open(write_file_path, 'w') as file:
         file.write(podcast_transcript)
 
